@@ -62,7 +62,6 @@ def classify_market_cap(market_cap):
     elif billions >= 0.3: return "Small Cap (소형주)"
     else: return "Micro Cap (초소형주)"
 
-# 캐시를 사용하되, 강제 새로고침을 위해 함수 분리
 def fetch_stock_data(ticker):
     try:
         stock = yf.Ticker(ticker)
@@ -105,7 +104,6 @@ def add_stock(ticker, avg_price, qty):
     info = get_stock_info_cached(ticker.strip().upper())
     if info['valid']:
         current_list = get_current_portfolio()
-        # 중복 티커가 있으면 합치는 대신, 리스트에 추가 (개별 관리)
         current_list.append({
             'Ticker': ticker.strip().upper(),
             'Avg Price': float(avg_price),
@@ -119,22 +117,20 @@ def add_stock(ticker, avg_price, qty):
     return False
 
 def refresh_prices():
-    """모든 종목의 현재가를 최신으로 업데이트"""
     current_list = get_current_portfolio()
     updated_list = []
     progress_bar = st.progress(0)
     for i, item in enumerate(current_list):
-        # 캐시 없이 직접 호출
         new_info = fetch_stock_data(item['Ticker'])
         if new_info['valid']:
             item['Current Price'] = new_info['current_price']
-            item['Sector'] = new_info['sector'] # 섹터 정보도 갱신
+            item['Sector'] = new_info['sector']
             item['Market Cap Class'] = new_info['market_cap_class']
         updated_list.append(item)
         progress_bar.progress((i + 1) / len(current_list))
     progress_bar.empty()
     update_current_portfolio(updated_list)
-    st.toast("모든 시세가 업데이트되었습니다!", icon="🔄")
+    st.toast("시세 업데이트 완료!", icon="🔄")
 
 def process_csv(txt):
     try:
@@ -148,29 +144,25 @@ def process_csv(txt):
 # -----------------------------------------------------------------------------
 with st.sidebar:
     st.title("👥 프로필 & 설정")
-    
-    # 프로필 관리
     prof_keys = list(st.session_state.full_data["profiles"].keys())
     sel_prof = st.selectbox("프로필", prof_keys, index=prof_keys.index(st.session_state.current_profile) if st.session_state.current_profile in prof_keys else 0)
     if sel_prof != st.session_state.current_profile:
         st.session_state.current_profile = sel_prof
         st.rerun()
 
-    with st.expander("➕ 새 프로필 / 삭제"):
-        new_p = st.text_input("이름")
+    with st.expander("➕ 관리"):
+        new_p = st.text_input("새 프로필")
         if st.button("생성"):
             if new_p and new_p not in st.session_state.full_data["profiles"]:
                 st.session_state.full_data["profiles"][new_p] = []
                 st.session_state.current_profile = new_p
                 st.rerun()
-        if len(prof_keys) > 1 and st.button("현재 프로필 삭제", type="primary"):
+        if len(prof_keys) > 1 and st.button("삭제", type="primary"):
             del st.session_state.full_data["profiles"][st.session_state.current_profile]
             st.session_state.current_profile = list(st.session_state.full_data["profiles"].keys())[0]
             st.rerun()
 
     st.divider()
-    
-    # 클라우드
     c1, c2 = st.columns(2)
     if c1.button("📤 저장", type="primary", use_container_width=True): 
         if save_data_to_cloud(st.session_state.full_data): st.toast("저장 완료!", icon="💾")
@@ -179,8 +171,6 @@ with st.sidebar:
         if d: st.session_state.full_data = d; st.rerun()
 
     st.divider()
-    
-    # 설정 및 입력
     currency_mode = st.radio("통화", ["USD ($)", "KRW (₩)"], horizontal=True)
     ex_rate = get_exchange_rate()
     if currency_mode == "KRW (₩)": st.caption(f"환율: {ex_rate:,.2f} 원")
@@ -193,9 +183,7 @@ with st.sidebar:
         if st.button("추가"): add_stock(t, p, q)
     
     st.markdown("---")
-    if st.button("🔄 현재가 새로고침", use_container_width=True):
-        refresh_prices()
-        st.rerun()
+    if st.button("🔄 시세 새로고침", use_container_width=True): refresh_prices(); st.rerun()
 
 # -----------------------------------------------------------------------------
 # 5. 메인 대시보드
@@ -207,23 +195,21 @@ portfolio_data = get_current_portfolio()
 if portfolio_data:
     df = pd.DataFrame(portfolio_data)
     
-    # 1. USD 기초 계산
+    # 계산
     df['Invested_USD'] = df['Avg Price'] * df['Quantity']
     df['Value_USD'] = df['Current Price'] * df['Quantity']
     df['PnL_USD'] = df['Value_USD'] - df['Invested_USD']
     df['Return (%)'] = (df['PnL_USD'] / df['Invested_USD']) * 100
     
-    # 2. 환율 적용 (Display용)
     is_krw = currency_mode == "KRW (₩)"
     rate = ex_rate if is_krw else 1.0
     sym, fmt = ("₩", '{:,.0f}') if is_krw else ("$", '{:,.2f}')
 
-    # 계산 컬럼
     df['Invested_Disp'] = df['Invested_USD'] * rate
     df['Value_Disp'] = df['Value_USD'] * rate
     df['PnL_Disp'] = df['PnL_USD'] * rate
 
-    # --- Metrics ---
+    # Metrics
     tot_inv = df['Invested_Disp'].sum()
     tot_val = df['Value_Disp'].sum()
     tot_pnl = df['PnL_Disp'].sum()
@@ -232,62 +218,53 @@ if portfolio_data:
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("총 매수", f"{sym}{tot_inv:,.0f}" if is_krw else f"${tot_inv:,.2f}")
     c2.metric("총 평가", f"{sym}{tot_val:,.0f}" if is_krw else f"${tot_val:,.2f}")
-    c3.metric("총 손익", f"{sym}{tot_pnl:,.0f}" if is_krw else f"${tot_pnl:,.2f}", 
-              delta=f"{tot_pnl:,.0f}" if is_krw else f"{tot_pnl:,.2f}")
+    c3.metric("총 손익", f"{sym}{tot_pnl:,.0f}" if is_krw else f"${tot_pnl:,.2f}", delta=f"{tot_pnl:,.0f}" if is_krw else f"{tot_pnl:,.2f}")
     c4.metric("수익률", f"{tot_ret:.2f}%", delta=f"{tot_ret:.2f}%")
 
     st.divider()
 
-    # --- [NEW] 고급 분석 차트 ---
-    st.subheader("📈 심층 분석 (Advanced Analytics)")
+    # --- [복구됨] 차트 섹션 ---
+    st.subheader("📈 포트폴리오 시각화 (Charts)")
     
-    tab_graph1, tab_graph2 = st.tabs(["포트폴리오 구성", "수익률 분석"])
+    tab1, tab2 = st.tabs(["🧩 종합 분석 (Map & Sector)", "💹 수익률 분석 (Performance)"])
     
-    with tab_graph1:
-        # 기존 트리맵 + 시총 + [NEW] 집중도 분석
-        c_g1, c_g2 = st.columns([2, 1])
-        with c_g1:
-            fig_tree = px.treemap(df, path=[px.Constant("Total"), 'Sector', 'Ticker'], values='Value_Disp',
-                                  color='Return (%)', color_continuous_scale=['#0059b3', '#f0f0f0', '#ff2e2e'], color_continuous_midpoint=0)
-            fig_tree.update_traces(textinfo="label+value+percent entry")
-            st.plotly_chart(fig_tree, use_container_width=True)
-            
-        with c_g2:
-            st.markdown("#### 🎯 집중도 (Top 5)")
-            # 상위 5개와 나머지 계산
-            df_sorted_val = df.sort_values('Value_Disp', ascending=False)
-            if len(df) > 5:
-                top5 = df_sorted_val.head(5)
-                others_val = df_sorted_val.iloc[5:]['Value_Disp'].sum()
-                others_df = pd.DataFrame([{'Ticker': 'Others', 'Value_Disp': others_val}])
-                df_concentration = pd.concat([top5[['Ticker', 'Value_Disp']], others_df])
-            else:
-                df_concentration = df_sorted_val[['Ticker', 'Value_Disp']]
-                
-            fig_conc = px.pie(df_concentration, values='Value_Disp', names='Ticker', hole=0.5)
-            st.plotly_chart(fig_conc, use_container_width=True)
+    with tab1:
+        # Row 1: 트맵
+        st.markdown("##### 🗺️ 자산 지도 (Treemap)")
+        fig_tree = px.treemap(df, path=[px.Constant("Total"), 'Sector', 'Ticker'], values='Value_Disp',
+                              color='Return (%)', color_continuous_scale=['#0059b3', '#f0f0f0', '#ff2e2e'], color_continuous_midpoint=0)
+        fig_tree.update_traces(textinfo="label+value+percent entry")
+        st.plotly_chart(fig_tree, use_container_width=True)
 
-            st.markdown("#### 🏗️ 시총 규모")
+        # Row 2: 섹터 & 시총 (복구된 부분)
+        c_chart1, c_chart2 = st.columns(2)
+        with c_chart1:
+            st.markdown("##### 🍰 섹터별 비중 (Sector)")
+            fig_sec = px.pie(df, values='Value_Disp', names='Sector', hole=0.4, 
+                             color_discrete_sequence=px.colors.qualitative.Set3)
+            fig_sec.update_traces(textposition='inside', textinfo='percent+label')
+            st.plotly_chart(fig_sec, use_container_width=True)
+            
+        with c_chart2:
+            st.markdown("##### 🏗️ 시가총액 규모 (Market Cap)")
             cap_order = ["Mega Cap (초대형주)", "Large Cap (대형주)", "Mid Cap (중형주)", "Small Cap (소형주)", "Micro Cap (초소형주)", "Unknown"]
+            # 데이터 집계
             df_cap = df.groupby('Market Cap Class')['Value_Disp'].sum().reset_index()
-            fig_cap = px.bar(df_cap, x='Market Cap Class', y='Value_Disp', color='Market Cap Class', category_orders={"Market Cap Class": cap_order})
-            fig_cap.update_layout(showlegend=False)
+            fig_cap = px.bar(df_cap, x='Market Cap Class', y='Value_Disp', color='Market Cap Class', 
+                             category_orders={"Market Cap Class": cap_order}, text_auto='.2s')
+            fig_cap.update_layout(showlegend=False, xaxis_title=None, yaxis_title=None)
             st.plotly_chart(fig_cap, use_container_width=True)
 
-    with tab_graph2:
-        # [NEW] 섹터별 수익률 비교 & 랭킹
+    with tab2:
         c_r1, c_r2 = st.columns(2)
         with c_r1:
-            st.markdown("#### 🏭 섹터별 평균 수익률")
-            # 섹터별 수익률 가중평균 or 단순평균 (여기선 단순평균 사용)
+            st.markdown("##### 🏭 섹터별 수익률")
             df_sec_ret = df.groupby('Sector')['Return (%)'].mean().reset_index().sort_values('Return (%)', ascending=False)
             colors_sec = ['#ff2e2e' if x >= 0 else '#0059b3' for x in df_sec_ret['Return (%)']]
             fig_sec_ret = go.Figure(go.Bar(x=df_sec_ret['Sector'], y=df_sec_ret['Return (%)'], marker_color=colors_sec))
-            fig_sec_ret.update_layout(yaxis_title="수익률 (%)")
             st.plotly_chart(fig_sec_ret, use_container_width=True)
-            
         with c_r2:
-            st.markdown("#### 🏆 종목별 수익률 랭킹")
+            st.markdown("##### 🏆 종목별 랭킹")
             df_rank = df.sort_values('Return (%)', ascending=True)
             colors_rank = ['#ff2e2e' if x >= 0 else '#0059b3' for x in df_rank['Return (%)']]
             fig_rank = go.Figure(go.Bar(x=df_rank['Return (%)'], y=df_rank['Ticker'], orientation='h', marker_color=colors_rank))
@@ -295,80 +272,58 @@ if portfolio_data:
 
     st.divider()
 
-    # --- [EDITABLE] 상세 데이터 테이블 ---
-    st.subheader("📝 상세 데이터 수정")
-    st.info("💡 팁: '매수단가($)'와 '수량'을 클릭하여 직접 수정할 수 있습니다. 행을 삭제하려면 왼쪽 체크박스를 선택하고 델리트 키를 누르세요.")
+    # --- [복구됨] 상세 데이터 수정 테이블 ---
+    st.subheader("📝 보유 종목 상세 & 수정")
+    st.info("💡 팁: '매수단가'와 '수량'을 수정하면 즉시 반영됩니다. (섹터, 시총은 자동 분류되므로 수정 불가)")
 
-    # 편집용 데이터프레임 준비 (보여줄 컬럼만)
-    # Streamlit Editor는 원본 Dataframe 구조를 유지해야 하므로, 편집 가능한 컬럼과 보여줄 컬럼을 정리
-    # 편집은 USD 기준으로 하는 것이 정확하므로 USD 컬럼을 노출
-    
-    edit_df = df[['Ticker', 'Avg Price', 'Quantity', 'Current Price', 'Return (%)', 'Value_Disp']].copy()
-    edit_df.columns = ['Ticker', 'Avg Price ($)', 'Quantity', 'Current Price ($)', 'Return (%)', f'Valuation ({sym})']
+    # 편집용 DF 생성: 섹터와 시총 컬럼을 명시적으로 포함
+    edit_df = df[['Ticker', 'Sector', 'Market Cap Class', 'Avg Price', 'Quantity', 'Current Price', 'Return (%)', 'Value_Disp']].copy()
+    edit_df.columns = ['Ticker', 'Sector', 'Market Cap', 'Avg Price ($)', 'Quantity', 'Current Price ($)', 'Return (%)', f'Valuation ({sym})']
 
-    # data_editor 설정
     edited_df = st.data_editor(
         edit_df,
         column_config={
+            "Ticker": st.column_config.TextColumn(disabled=True),
+            "Sector": st.column_config.TextColumn(disabled=True), # 읽기 전용
+            "Market Cap": st.column_config.TextColumn(disabled=True), # 읽기 전용
             "Avg Price ($)": st.column_config.NumberColumn(min_value=0, format="%.2f", required=True),
             "Quantity": st.column_config.NumberColumn(min_value=0, format="%.4f", required=True),
-            "Ticker": st.column_config.TextColumn(disabled=True), # 티커 수정은 금지 (API 연동 문제)
             "Current Price ($)": st.column_config.NumberColumn(disabled=True, format="%.2f"),
             "Return (%)": st.column_config.NumberColumn(disabled=True, format="%.2f%"),
             f"Valuation ({sym})": st.column_config.NumberColumn(disabled=True, format="%.0f" if is_krw else "%.2f"),
         },
         use_container_width=True,
-        num_rows="dynamic", # 행 삭제 가능
+        num_rows="dynamic",
         key="editor"
     )
 
-    # --- 수정 사항 반영 로직 ---
-    # 편집된 데이터프레임(edited_df)과 원본(edit_df)이 다르면 세션 업데이트
-    # 주의: 여기서 num_rows="dynamic"으로 행이 삭제되었는지 확인해야 함
-    
     if not edit_df.equals(edited_df):
-        # 1. 수정된 데이터프레임을 리스트(Dict) 형태로 변환
         new_portfolio = []
-        
-        # 원래 데이터(df)에서 섹터와 시총 정보 등을 가져오기 위해 병합
-        # Ticker를 키로 사용하여 메타데이터 보존
-        # (주의: 사용자가 행을 삭제했을 수 있으므로 edited_df 기준으로 순회)
-        
         for index, row in edited_df.iterrows():
             ticker = row['Ticker']
-            # 원본 데이터에서 해당 티커의 메타데이터(섹터 등) 찾기
-            # 동명이인(중복 티커) 이슈가 있을 수 있으니 인덱스 매칭이 안전하지만, 
-            # data_editor는 인덱스를 재정렬할 수 있음. 
-            # 여기서는 간단히 기존 df의 인덱스를 보존한다고 가정하거나, 티커로 재매핑.
-            
-            # 가장 안전한 방법: 기존 df에서 해당 인덱스의 메타데이터 가져오기
-            # edit_df와 edited_df는 인덱스가 공유됨 (삭제된 인덱스 제외)
-            
+            # 원본 메타데이터 보존 시도 (삭제되지 않은 행에 대해)
             try:
-                original_row = df.loc[index]
-                sector = original_row['Sector']
-                mkt_cap = original_row['Market Cap Class']
-                # 가격은 API 최신값 유지를 위해 원본 current price 사용 (수정 불가 컬럼이므로)
-                curr_price = original_row['Current Price']
-            except KeyError:
-                # 만약 인덱스가 없다면? (사용자가 행을 추가한 경우인데, 여기선 막음)
-                # 혹시 모르니 기본값 처리
-                sector = "Unknown"
-                mkt_cap = "Unknown"
-                curr_price = 0.0
+                # 에디터의 행 순서가 바뀔 수 있으므로 인덱스보다는 티커/값 기반 매핑이 안전하나
+                # 여기서는 단순화를 위해 기존 로직 유지 (메타데이터는 읽기전용이므로 화면값 신뢰)
+                sector = row['Sector']
+                mkt_cap = row['Market Cap']
+                # 가격 갱신을 위해 원본 DF 참조 (API 값 유지)
+                # 만약 행이 새로 추가된 거라면(여기선 불가) 별도 처리 필요하지만
+                # 기존 행 수정이므로 원본 df에서 current price 가져옴 (안전장치)
+                curr_price = df[df['Ticker'] == ticker]['Current Price'].values[0] if not df[df['Ticker'] == ticker].empty else 0.0
+            except:
+                sector, mkt_cap, curr_price = "Unknown", "Unknown", 0.0
 
             new_portfolio.append({
                 'Ticker': ticker,
-                'Avg Price': float(row['Avg Price ($)']),  # 수정된 값
-                'Quantity': float(row['Quantity']),        # 수정된 값
+                'Avg Price': float(row['Avg Price ($)']),
+                'Quantity': float(row['Quantity']),
                 'Current Price': float(curr_price),
                 'Sector': sector,
                 'Market Cap Class': mkt_cap
             })
-            
-        # 2. 세션 스테이트 업데이트
         update_current_portfolio(new_portfolio)
         st.rerun()
 
 else:
-    st.info("👈 데이터를 입력하거나 불러와주세요.")
+    st.info("👈 데이터를 입력해주세요.")
