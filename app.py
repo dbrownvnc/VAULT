@@ -2,216 +2,164 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import plotly.express as px
-import plotly.graph_objects as go
+import io # 문자열을 파일처럼 처리하기 위해 추가
 
 # -----------------------------------------------------------------------------
 # 1. 페이지 설정 및 디자인
 # -----------------------------------------------------------------------------
-st.set_page_config(
-    page_title="Pro Portfolio Tracker",
-    page_icon="📈",
-    layout="wide"
-)
-
-# 커스텀 CSS (가독성 향상)
+st.set_page_config(page_title="Pro Portfolio Tracker", page_icon="📈", layout="wide")
 st.markdown("""
 <style>
-    .metric-card {
-        background-color: #f0f2f6;
-        padding: 20px;
-        border-radius: 10px;
-        border-left: 5px solid #ff4b4b;
-    }
+    .metric-card { background-color: #f0f2f6; padding: 20px; border-radius: 10px; border-left: 5px solid #ff4b4b; }
 </style>
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# 2. 유틸리티 함수 (데이터 수집 및 로직)
+# 2. 유틸리티 함수
 # -----------------------------------------------------------------------------
-
-# 시가총액 규모 분류 기준 (USD 기준, 일반적인 월가 기준 적용)
 def classify_market_cap(market_cap):
-    if market_cap is None:
-        return "Unknown"
-    
+    if market_cap is None: return "Unknown"
     billions = market_cap / 1_000_000_000
-    if billions >= 200:
-        return "Mega Cap (초대형주)"
-    elif billions >= 10:
-        return "Large Cap (대형주)"
-    elif billions >= 2:
-        return "Mid Cap (중형주)"
-    elif billions >= 0.3:
-        return "Small Cap (소형주)"
-    else:
-        return "Micro Cap (초소형주)"
+    if billions >= 200: return "Mega Cap (초대형주)"
+    elif billions >= 10: return "Large Cap (대형주)"
+    elif billions >= 2: return "Mid Cap (중형주)"
+    elif billions >= 0.3: return "Small Cap (소형주)"
+    else: return "Micro Cap (초소형주)"
 
-@st.cache_data(ttl=60) # 1분마다 캐시 초기화 (실시간성 유지)
+@st.cache_data(ttl=60)
 def get_stock_info(ticker):
-    """
-    yfinance를 통해 주식의 최신 정보를 가져옵니다.
-    """
     try:
         stock = yf.Ticker(ticker)
-        # fast_info가 응답 속도가 더 빠름
         price = stock.fast_info.get('last_price', None)
-        
-        # 상세 정보는 info 딕셔너리에서 추출
         info = stock.info
-        sector = info.get('sector', 'Others')
-        industry = info.get('industry', 'Others')
-        mkt_cap = info.get('marketCap', 0)
-        currency = info.get('currency', 'USD')
+        if price is None: price = info.get('currentPrice', 0)
         
-        if price is None:
-            # fast_info 실패 시 일반 info에서 재시도
-            price = info.get('currentPrice', 0)
-
         return {
             'current_price': price,
-            'sector': sector,
-            'industry': industry,
-            'market_cap_raw': mkt_cap,
-            'market_cap_class': classify_market_cap(mkt_cap),
-            'currency': currency,
+            'sector': info.get('sector', 'Others'),
+            'market_cap_class': classify_market_cap(info.get('marketCap', 0)),
+            'market_cap_raw': info.get('marketCap', 0),
+            'currency': info.get('currency', 'USD'),
             'valid': True
         }
     except Exception as e:
-        return {'valid': False, 'error': str(e)}
+        return {'valid': False}
 
 # -----------------------------------------------------------------------------
-# 3. 세션 상태 관리 (데이터 저장소)
+# 3. 세션 및 데이터 관리
 # -----------------------------------------------------------------------------
 if 'portfolio' not in st.session_state:
     st.session_state.portfolio = []
 
-def add_stock(ticker, avg_price, qty):
-    """포트폴리오에 종목을 추가하고 즉시 데이터를 업데이트합니다."""
-    with st.spinner(f"'{ticker}' 데이터 불러오는 중..."):
-        info = get_stock_info(ticker)
-        
+def add_stock_data(ticker, avg_price, qty):
+    """단일 종목 추가 로직 (재사용을 위해 함수 분리)"""
+    ticker = ticker.strip().upper()
+    info = get_stock_info(ticker)
+    
     if info['valid']:
         st.session_state.portfolio.append({
-            'Ticker': ticker.upper(),
-            'Avg Price': avg_price,
-            'Quantity': qty,
+            'Ticker': ticker,
+            'Avg Price': float(avg_price),
+            'Quantity': float(qty),
             'Current Price': info['current_price'],
             'Sector': info['sector'],
             'Market Cap Class': info['market_cap_class'],
-            'Market Cap Raw': info['market_cap_raw'],
             'Currency': info['currency']
         })
-        st.success(f"✅ {ticker.upper()} 추가 완료!")
-    else:
-        st.error(f"❌ '{ticker}' 정보를 찾을 수 없습니다. 티커를 확인해주세요.")
+        return True
+    return False
 
-def clear_portfolio():
-    st.session_state.portfolio = []
-    st.rerun()
+def process_csv_input(csv_text):
+    """CSV 텍스트를 읽어서 일괄 등록"""
+    try:
+        # 헤더가 없는 경우를 가정하여 읽기
+        df_input = pd.read_csv(io.StringIO(csv_text), header=None, names=['Ticker', 'Price', 'Qty'])
+        
+        success_count = 0
+        progress_bar = st.sidebar.progress(0)
+        
+        for idx, row in df_input.iterrows():
+            if add_stock_data(str(row['Ticker']), row['Price'], row['Qty']):
+                success_count += 1
+            progress_bar.progress((idx + 1) / len(df_input))
+            
+        progress_bar.empty()
+        
+        if success_count > 0:
+            st.sidebar.success(f"✅ {success_count}개 종목 일괄 등록 성공!")
+        else:
+            st.sidebar.warning("등록된 종목이 없습니다. 티커를 확인하세요.")
+            
+    except Exception as e:
+        st.sidebar.error(f"형식 오류: {e}")
 
 # -----------------------------------------------------------------------------
-# 4. 사이드바 (입력 패널)
+# 4. 사이드바 (입력 패널 - 기능 확장)
 # -----------------------------------------------------------------------------
 with st.sidebar:
     st.header("📝 포트폴리오 입력")
     
-    input_ticker = st.text_input("티커 (Ticker)", placeholder="예: AAPL, TSLA, 005930.KS").strip()
+    # 탭을 사용하여 개별 입력과 일괄 입력을 분리
+    tab1, tab2 = st.tabs(["개별 추가", "⚡ 일괄 추가(CSV)"])
+    
+    with tab1:
+        input_ticker = st.text_input("티커", placeholder="AAPL").strip()
+        c1, c2 = st.columns(2)
+        p = c1.number_input("매수가", 0.0, format="%.2f")
+        q = c2.number_input("수량", 0.0, format="%.2f")
+        if st.button("추가", use_container_width=True):
+            if add_stock_data(input_ticker, p, q):
+                st.success(f"{input_ticker} 추가됨")
+            else:
+                st.error("티커 오류")
+
+    with tab2:
+        st.markdown("**형식:** `티커, 매수가, 수량`")
+        st.markdown("_예시: NVDA, 120.5, 10_")
+        csv_input = st.text_area("데이터 붙여넣기", height=150)
+        
+        if st.button("일괄 등록 실행", type="primary", use_container_width=True):
+            if csv_input:
+                process_csv_input(csv_input)
+
+    st.markdown("---")
+    if st.button("전체 초기화"):
+        st.session_state.portfolio = []
+        st.rerun()
+
+# -----------------------------------------------------------------------------
+# 5. 메인 대시보드 (기존과 동일하되 간단히 정리)
+# -----------------------------------------------------------------------------
+st.title("📊 My Smart Portfolio")
+
+if st.session_state.portfolio:
+    df = pd.DataFrame(st.session_state.portfolio)
+    df['Invested'] = df['Avg Price'] * df['Quantity']
+    df['Value'] = df['Current Price'] * df['Quantity']
+    df['P&L'] = df['Value'] - df['Invested']
+    df['Return (%)'] = (df['P&L'] / df['Invested']) * 100
+    
+    # 상단 지표
+    c1, c2, c3 = st.columns(3)
+    c1.metric("총 평가 금액", f"${df['Value'].sum():,.0f}")
+    c2.metric("총 수익금", f"${df['P&L'].sum():,.0f}", delta_color="normal")
+    tot_ret = (df['P&L'].sum() / df['Invested'].sum() * 100)
+    c3.metric("총 수익률", f"{tot_ret:.2f}%", delta=f"{tot_ret:.2f}%")
+    
+    st.divider()
+    
+    # 차트 (좌: 섹터, 우: 시총)
     col1, col2 = st.columns(2)
     with col1:
-        input_price = st.number_input("평균 매수단가", min_value=0.0, format="%.2f")
+        fig1 = px.pie(df, values='Value', names='Sector', title='섹터별 비중')
+        st.plotly_chart(fig1, use_container_width=True)
     with col2:
-        input_qty = st.number_input("보유 수량", min_value=0.0, format="%.2f")
-        
-    if st.button("주식 추가", use_container_width=True):
-        if input_ticker and input_qty > 0:
-            add_stock(input_ticker, input_price, input_qty)
-        else:
-            st.warning("티커와 수량을 올바르게 입력해주세요.")
-
-    st.markdown("---")
-    if st.button("포트폴리오 초기화", type="primary"):
-        clear_portfolio()
-    
-    st.info("💡 **Tip:** 한국 주식은 티커 뒤에 `.KS`(코스피) 또는 `.KQ`(코스닥)를 붙이세요. (예: 005930.KS)")
-
-# -----------------------------------------------------------------------------
-# 5. 메인 대시보드
-# -----------------------------------------------------------------------------
-st.title("📊 Pro Stock Portfolio Dashboard")
-
-if len(st.session_state.portfolio) > 0:
-    # 데이터프레임 변환 및 계산
-    df = pd.DataFrame(st.session_state.portfolio)
-    
-    # 핵심 계산 로직
-    df['Invested Amount'] = df['Avg Price'] * df['Quantity'] # 총 매수 금액
-    df['Current Value'] = df['Current Price'] * df['Quantity'] # 현재 평가 금액
-    df['Profit/Loss'] = df['Current Value'] - df['Invested Amount'] # 손익금
-    df['Return (%)'] = (df['Profit/Loss'] / df['Invested Amount']) * 100 # 수익률
-    
-    # --- Top Metrics 섹션 ---
-    total_invested = df['Invested Amount'].sum()
-    total_value = df['Current Value'].sum()
-    total_pnl = df['Profit/Loss'].sum()
-    total_return = (total_pnl / total_invested * 100) if total_invested > 0 else 0
-
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("총 매수 금액", f"${total_invested:,.2f}")
-    m2.metric("현재 평가 금액", f"${total_value:,.2f}")
-    m3.metric("총 손익 (P&L)", f"${total_pnl:,.2f}", delta_color="normal")
-    m4.metric("총 수익률", f"{total_return:,.2f}%", delta=f"{total_return:,.2f}%")
-    
-    st.markdown("---")
-
-    # --- 차트 섹션 (섹터 & 시총) ---
-    c1, c2 = st.columns(2)
-    
-    with c1:
-        st.subheader("🍰 섹터별 비중 (Sector Allocation)")
-        fig_sector = px.pie(df, values='Current Value', names='Sector', hole=0.4,
-                            color_discrete_sequence=px.colors.qualitative.Pastel)
-        fig_sector.update_traces(textinfo='percent+label')
-        st.plotly_chart(fig_sector, use_container_width=True)
-        
-    with c2:
-        st.subheader("🏛️ 시가총액 규모별 분포 (Market Cap)")
-        # 시총 순서 정렬을 위한 로직
         cap_order = ["Mega Cap (초대형주)", "Large Cap (대형주)", "Mid Cap (중형주)", "Small Cap (소형주)", "Micro Cap (초소형주)", "Unknown"]
-        fig_cap = px.bar(df, x='Market Cap Class', y='Current Value', color='Ticker',
-                         category_orders={"Market Cap Class": cap_order},
-                         labels={'Current Value': '평가 금액 ($)'})
-        st.plotly_chart(fig_cap, use_container_width=True)
-
-    # --- 상세 데이터 테이블 ---
-    st.subheader("📋 보유 종목 상세 (Detailed View)")
-    
-    # 보여줄 컬럼 선택 및 포맷팅
-    display_df = df[['Ticker', 'Sector', 'Market Cap Class', 'Avg Price', 'Current Price', 'Quantity', 'Return (%)', 'Profit/Loss', 'Current Value']]
-    
-    # 스타일링 (수익률 색상 적용)
-    def color_return(val):
-        color = '#ff4b4b' if val < 0 else '#2ecc71'
-        return f'color: {color}'
-
-    st.dataframe(
-        display_df.style.format({
-            'Avg Price': '${:,.2f}',
-            'Current Price': '${:,.2f}',
-            'Quantity': '{:,.2f}',
-            'Return (%)': '{:,.2f}%',
-            'Profit/Loss': '${:,.2f}',
-            'Current Value': '${:,.2f}'
-        }).map(color_return, subset=['Return (%)', 'Profit/Loss']),
-        use_container_width=True,
-        hide_index=True
-    )
+        fig2 = px.bar(df, x='Market Cap Class', y='Value', color='Ticker', title='시가총액 규모별', category_orders={"Market Cap Class": cap_order})
+        st.plotly_chart(fig2, use_container_width=True)
+        
+    # 테이블 출력
+    st.dataframe(df.style.format({'Avg Price': '${:.2f}', 'Current Price': '${:.2f}', 'Return (%)': '{:.2f}%'}), use_container_width=True)
 
 else:
-    # 데이터가 없을 때 보여줄 화면
-    st.info("👈 왼쪽 사이드바에서 주식 티커와 매수 정보를 입력하여 포트폴리오를 구성해보세요.")
-    st.markdown("""
-    **사용 가이드:**
-    1. **미국 주식:** AAPL, NVDA, TSLA 등 티커 입력
-    2. **한국 주식:** 005930.KS (삼성전자), 035420.KS (네이버) 등 `.KS` 입력
-    3. **자동 분류:** 입력 즉시 섹터와 시가총액 규모가 자동으로 분류됩니다.
-    """)
+    st.info("👈 사이드바의 '일괄 추가' 탭에 데이터를 붙여넣으세요.")
