@@ -27,12 +27,14 @@ API_KEY = st.secrets["jsonbin"]["api_key"] if "jsonbin" in st.secrets else None
 BIN_ID = st.secrets["jsonbin"]["bin_id"] if "jsonbin" in st.secrets else None
 
 def load_data_from_cloud():
+    """클라우드에서 데이터 불러오기"""
     if not API_KEY or not BIN_ID: return {}
     try:
         url = f"https://api.jsonbin.io/v3/b/{BIN_ID}/latest"
         res = requests.get(url, headers={"X-Master-Key": API_KEY})
         if res.status_code == 200:
             data = res.json().get("record", {})
+            # 데이터 구조 호환성 처리
             if "portfolio" in data and isinstance(data["portfolio"], list):
                 return {"profiles": {"Default": data["portfolio"]}}
             if "profiles" in data: return data
@@ -41,6 +43,7 @@ def load_data_from_cloud():
     except: return {"profiles": {"Default": []}}
 
 def save_data_to_cloud(full_data):
+    """클라우드에 데이터 저장하기"""
     if not API_KEY or not BIN_ID: return False
     try:
         url = f"https://api.jsonbin.io/v3/b/{BIN_ID}"
@@ -84,22 +87,35 @@ def get_stock_info_cached(ticker):
     return fetch_stock_data(ticker)
 
 # -----------------------------------------------------------------------------
-# 3. 세션 및 로직
+# 3. 세션 및 로직 (핵심: 자동 저장 적용)
 # -----------------------------------------------------------------------------
 if 'full_data' not in st.session_state:
     st.session_state.full_data = {"profiles": {"Default": []}}
+
+# 앱 최초 실행 시 클라우드 로드
 if 'init_load' not in st.session_state:
     cloud_data = load_data_from_cloud()
     if cloud_data: st.session_state.full_data = cloud_data
     st.session_state.init_load = True
+
 if 'current_profile' not in st.session_state:
     st.session_state.current_profile = "Default"
 
 def get_current_portfolio():
     return st.session_state.full_data["profiles"].get(st.session_state.current_profile, [])
 
-def update_current_portfolio(new_list):
+def update_portfolio_and_save(new_list):
+    """
+    [핵심 변경] 포트폴리오를 업데이트하고 즉시 클라우드에 저장합니다.
+    """
+    # 1. 세션 업데이트 (화면 반영)
     st.session_state.full_data["profiles"][st.session_state.current_profile] = new_list
+    
+    # 2. 클라우드 자동 저장 (백그라운드)
+    if save_data_to_cloud(st.session_state.full_data):
+        st.toast("☁️ 변경사항이 클라우드에 자동 저장되었습니다!", icon="✅")
+    else:
+        st.toast("⚠️ 저장 실패! API 설정을 확인하세요.", icon="❌")
 
 def add_stock(ticker, avg_price, qty):
     info = get_stock_info_cached(ticker.strip().upper())
@@ -113,7 +129,8 @@ def add_stock(ticker, avg_price, qty):
             'Sector': info['sector'],
             'Market Cap Class': info['market_cap_class']
         })
-        update_current_portfolio(current_list)
+        # 추가 즉시 저장
+        update_portfolio_and_save(current_list)
         return True
     return False
 
@@ -130,8 +147,9 @@ def refresh_prices():
         updated_list.append(item)
         progress_bar.progress((i + 1) / len(current_list))
     progress_bar.empty()
-    update_current_portfolio(updated_list)
-    st.toast("시세 업데이트 완료!", icon="🔄")
+    # 가격 갱신 후 자동 저장
+    update_portfolio_and_save(updated_list)
+    st.toast("시세 업데이트 완료 및 저장됨!", icon="🔄")
 
 def process_csv(txt):
     try:
@@ -145,31 +163,40 @@ def process_csv(txt):
 # -----------------------------------------------------------------------------
 with st.sidebar:
     st.title("👥 프로필 & 설정")
+    
+    # API 키 상태 점검
+    if not API_KEY or not BIN_ID:
+        st.error("🚨 Secrets(API Key)가 설정되지 않았습니다! 저장이 불가능합니다.")
+    
     prof_keys = list(st.session_state.full_data["profiles"].keys())
-    sel_prof = st.selectbox("프로필", prof_keys, index=prof_keys.index(st.session_state.current_profile) if st.session_state.current_profile in prof_keys else 0)
+    sel_prof = st.selectbox("프로필 선택", prof_keys, index=prof_keys.index(st.session_state.current_profile) if st.session_state.current_profile in prof_keys else 0)
+    
     if sel_prof != st.session_state.current_profile:
         st.session_state.current_profile = sel_prof
         st.rerun()
 
-    with st.expander("➕ 관리"):
-        new_p = st.text_input("새 프로필")
+    with st.expander("➕ 프로필 관리"):
+        new_p = st.text_input("새 프로필 이름")
         if st.button("생성"):
             if new_p and new_p not in st.session_state.full_data["profiles"]:
                 st.session_state.full_data["profiles"][new_p] = []
                 st.session_state.current_profile = new_p
+                # 프로필 생성 시 자동 저장
+                save_data_to_cloud(st.session_state.full_data)
                 st.rerun()
-        if len(prof_keys) > 1 and st.button("삭제", type="primary"):
+        
+        if len(prof_keys) > 1 and st.button("현재 프로필 삭제", type="primary"):
             del st.session_state.full_data["profiles"][st.session_state.current_profile]
             st.session_state.current_profile = list(st.session_state.full_data["profiles"].keys())[0]
+            save_data_to_cloud(st.session_state.full_data)
             st.rerun()
 
     st.divider()
-    c1, c2 = st.columns(2)
-    if c1.button("📤 저장", type="primary", use_container_width=True): 
+    
+    # 수동 저장 버튼 (혹시 몰라 유지하되, 자동 저장이 기본임)
+    if st.button("강제 클라우드 저장 (Manual Save)", use_container_width=True): 
         if save_data_to_cloud(st.session_state.full_data): st.toast("저장 완료!", icon="💾")
-    if c2.button("📥 로드", use_container_width=True):
-        d = load_data_from_cloud()
-        if d: st.session_state.full_data = d; st.rerun()
+        else: st.error("저장 실패")
 
     st.divider()
     currency_mode = st.radio("통화", ["USD ($)", "KRW (₩)"], horizontal=True)
@@ -196,7 +223,7 @@ portfolio_data = get_current_portfolio()
 if portfolio_data:
     df = pd.DataFrame(portfolio_data)
     
-    # 계산
+    # 계산 로직
     df['Invested_USD'] = df['Avg Price'] * df['Quantity']
     df['Value_USD'] = df['Current Price'] * df['Quantity']
     df['PnL_USD'] = df['Value_USD'] - df['Invested_USD']
@@ -210,7 +237,7 @@ if portfolio_data:
     df['Value_Disp'] = df['Value_USD'] * rate
     df['PnL_Disp'] = df['PnL_USD'] * rate
 
-    # Metrics
+    # 상단 메트릭
     tot_inv = df['Invested_Disp'].sum()
     tot_val = df['Value_Disp'].sum()
     tot_pnl = df['PnL_Disp'].sum()
@@ -224,35 +251,29 @@ if portfolio_data:
 
     st.divider()
 
-    # --- 차트 섹션 ---
-    st.subheader("📈 포트폴리오 시각화 (Charts)")
-    
-    tab1, tab2 = st.tabs(["🧩 종합 분석 (Map & Sector)", "💹 수익률 분석 (Performance)"])
+    # --- 차트 ---
+    st.subheader("📈 포트폴리오 시각화")
+    tab1, tab2 = st.tabs(["🧩 종합 분석", "💹 수익률 분석"])
     
     with tab1:
-        # Row 1: 트맵
-        st.markdown("##### 🗺️ 자산 지도 (Treemap)")
+        st.markdown("##### 🗺️ 자산 지도")
         fig_tree = px.treemap(df, path=[px.Constant("Total"), 'Sector', 'Ticker'], values='Value_Disp',
                               color='Return (%)', color_continuous_scale=['#0059b3', '#f0f0f0', '#ff2e2e'], color_continuous_midpoint=0)
         fig_tree.update_traces(textinfo="label+value+percent entry")
         st.plotly_chart(fig_tree, use_container_width=True)
 
-        # Row 2: 섹터 & 시총
         c_chart1, c_chart2 = st.columns(2)
         with c_chart1:
-            st.markdown("##### 🍰 섹터별 비중 (Sector)")
-            fig_sec = px.pie(df, values='Value_Disp', names='Sector', hole=0.4, 
-                             color_discrete_sequence=px.colors.qualitative.Set3)
+            st.markdown("##### 🍰 섹터 비중")
+            fig_sec = px.pie(df, values='Value_Disp', names='Sector', hole=0.4, color_discrete_sequence=px.colors.qualitative.Set3)
             fig_sec.update_traces(textposition='inside', textinfo='percent+label')
             st.plotly_chart(fig_sec, use_container_width=True)
-            
         with c_chart2:
-            st.markdown("##### 🏗️ 시가총액 규모 (Market Cap)")
+            st.markdown("##### 🏗️ 시총 규모")
             cap_order = ["Mega Cap (초대형주)", "Large Cap (대형주)", "Mid Cap (중형주)", "Small Cap (소형주)", "Micro Cap (초소형주)", "Unknown"]
             df_cap = df.groupby('Market Cap Class')['Value_Disp'].sum().reset_index()
-            fig_cap = px.bar(df_cap, x='Market Cap Class', y='Value_Disp', color='Market Cap Class', 
-                             category_orders={"Market Cap Class": cap_order}, text_auto='.2s')
-            fig_cap.update_layout(showlegend=False, xaxis_title=None, yaxis_title=None)
+            fig_cap = px.bar(df_cap, x='Market Cap Class', y='Value_Disp', color='Market Cap Class', category_orders={"Market Cap Class": cap_order}, text_auto='.2s')
+            fig_cap.update_layout(showlegend=False)
             st.plotly_chart(fig_cap, use_container_width=True)
 
     with tab2:
@@ -264,7 +285,7 @@ if portfolio_data:
             fig_sec_ret = go.Figure(go.Bar(x=df_sec_ret['Sector'], y=df_sec_ret['Return (%)'], marker_color=colors_sec))
             st.plotly_chart(fig_sec_ret, use_container_width=True)
         with c_r2:
-            st.markdown("##### 🏆 종목별 랭킹")
+            st.markdown("##### 🏆 종목 랭킹")
             df_rank = df.sort_values('Return (%)', ascending=True)
             colors_rank = ['#ff2e2e' if x >= 0 else '#0059b3' for x in df_rank['Return (%)']]
             fig_rank = go.Figure(go.Bar(x=df_rank['Return (%)'], y=df_rank['Ticker'], orientation='h', marker_color=colors_rank))
@@ -272,39 +293,21 @@ if portfolio_data:
 
     st.divider()
 
-    # --- [NEW] 정렬 기능 추가 ---
-    st.subheader("📝 보유 종목 상세 (Sorting & Edit)")
+    # --- 정렬 및 편집 ---
+    st.subheader("📝 상세 데이터 관리 (자동 저장됨)")
     
-    # 정렬 컨트롤 UI
-    c_sort1, c_sort2 = st.columns([1, 2])
-    with c_sort1:
-        sort_option = st.selectbox(
-            "🔽 정렬 기준 (Sort By)", 
-            ["평가금액 (Value)", "수익률 (Return %)", "종목명 (Ticker)", "섹터 (Sector)", "보유수량 (Qty)"]
-        )
-    with c_sort2:
-        sort_order = st.radio(
-            "📶 정렬 순서 (Order)", 
-            ["내림차순 (▼ 높은 순)", "오름차순 (▲ 낮은 순)"], 
-            horizontal=True
-        )
+    # 정렬 UI
+    c_s1, c_s2 = st.columns([1, 2])
+    with c_s1:
+        sort_opt = st.selectbox("정렬 기준", ["평가금액", "수익률", "티커", "섹터", "보유수량"])
+    with c_s2:
+        sort_ord = st.radio("정렬 순서", ["내림차순 (▼)", "오름차순 (▲)"], horizontal=True)
 
-    # 정렬 로직 적용
-    sort_map = {
-        "평가금액 (Value)": "Value_Disp",
-        "수익률 (Return %)": "Return (%)",
-        "종목명 (Ticker)": "Ticker",
-        "섹터 (Sector)": "Sector",
-        "보유수량 (Qty)": "Quantity"
-    }
-    
-    ascending = False if "내림차순" in sort_order else True
-    target_col = sort_map[sort_option]
-    
-    # 데이터프레임 정렬 실행
-    df_sorted = df.sort_values(by=target_col, ascending=ascending).reset_index(drop=True)
+    # 정렬 로직
+    sort_map = {"평가금액": "Value_Disp", "수익률": "Return (%)", "티커": "Ticker", "섹터": "Sector", "보유수량": "Quantity"}
+    asc = False if "내림차순" in sort_ord else True
+    df_sorted = df.sort_values(by=sort_map[sort_opt], ascending=asc).reset_index(drop=True)
 
-    # 편집용 DF 생성
     edit_df = df_sorted[['Ticker', 'Sector', 'Market Cap Class', 'Avg Price', 'Quantity', 'Current Price', 'Return (%)', 'Value_Disp']].copy()
     edit_df.columns = ['Ticker', 'Sector', 'Market Cap', 'Avg Price ($)', 'Quantity', 'Current Price ($)', 'Return (%)', f'Valuation ({sym})']
 
@@ -325,12 +328,13 @@ if portfolio_data:
         key="editor"
     )
 
+    # 변경 감지 및 자동 저장
     if not edit_df.equals(edited_df):
         new_portfolio = []
         for index, row in edited_df.iterrows():
             ticker = row['Ticker']
             try:
-                # 메타데이터 보존 로직
+                # 메타데이터 보존
                 original_row = df[df['Ticker'] == ticker].iloc[0]
                 sector = original_row['Sector']
                 mkt_cap = original_row['Market Cap Class']
@@ -346,7 +350,9 @@ if portfolio_data:
                 'Sector': sector,
                 'Market Cap Class': mkt_cap
             })
-        update_current_portfolio(new_portfolio)
+        
+        # [자동 저장 트리거]
+        update_portfolio_and_save(new_portfolio)
         st.rerun()
 
 else:
