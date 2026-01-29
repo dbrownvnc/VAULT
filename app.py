@@ -43,14 +43,37 @@ def load_data_from_cloud():
     except: return {"profiles": {"Default": []}}
 
 def save_data_to_cloud(full_data):
-    """클라우드에 데이터 저장하기"""
-    if not API_KEY or not BIN_ID: return False
+    """클라우드 저장 및 상세 에러 리포팅 (디버깅 모드)"""
+    # 1. 키 설정 확인
+    if not API_KEY:
+        st.error("🚨 에러: Secrets에 'api_key'가 없습니다. Streamlit Settings를 확인하세요.")
+        return False
+    if not BIN_ID:
+        st.error("🚨 에러: Secrets에 'bin_id'가 없습니다. Streamlit Settings를 확인하세요.")
+        return False
+        
+    url = f"https://api.jsonbin.io/v3/b/{BIN_ID}"
+    headers = {
+        "Content-Type": "application/json",
+        "X-Master-Key": API_KEY
+    }
+    
     try:
-        url = f"https://api.jsonbin.io/v3/b/{BIN_ID}"
-        headers = {"Content-Type": "application/json", "X-Master-Key": API_KEY}
+        # 2. 전송 시도
         res = requests.put(url, json=full_data, headers=headers)
-        return res.status_code == 200
-    except: return False
+        
+        # 3. 결과 확인
+        if res.status_code == 200:
+            return True
+        else:
+            # 🚨 에러 발생 시 화면에 상세 내용 출력
+            st.error(f"❌ 저장 실패! (상태 코드: {res.status_code})")
+            st.code(res.text, language="json") # JSONBin이 보낸 에러 메시지 원문
+            return False
+            
+    except Exception as e:
+        st.error(f"❌ 통신 오류 발생: {str(e)}")
+        return False
 
 @st.cache_data(ttl=300)
 def get_exchange_rate():
@@ -87,7 +110,7 @@ def get_stock_info_cached(ticker):
     return fetch_stock_data(ticker)
 
 # -----------------------------------------------------------------------------
-# 3. 세션 및 로직 (핵심: 자동 저장 적용)
+# 3. 세션 및 로직 (자동 저장 포함)
 # -----------------------------------------------------------------------------
 if 'full_data' not in st.session_state:
     st.session_state.full_data = {"profiles": {"Default": []}}
@@ -105,17 +128,10 @@ def get_current_portfolio():
     return st.session_state.full_data["profiles"].get(st.session_state.current_profile, [])
 
 def update_portfolio_and_save(new_list):
-    """
-    [핵심 변경] 포트폴리오를 업데이트하고 즉시 클라우드에 저장합니다.
-    """
-    # 1. 세션 업데이트 (화면 반영)
+    """포트폴리오 업데이트 후 즉시 저장 시도"""
     st.session_state.full_data["profiles"][st.session_state.current_profile] = new_list
-    
-    # 2. 클라우드 자동 저장 (백그라운드)
     if save_data_to_cloud(st.session_state.full_data):
-        st.toast("☁️ 변경사항이 클라우드에 자동 저장되었습니다!", icon="✅")
-    else:
-        st.toast("⚠️ 저장 실패! API 설정을 확인하세요.", icon="❌")
+        st.toast("☁️ 클라우드 저장 완료!", icon="✅")
 
 def add_stock(ticker, avg_price, qty):
     info = get_stock_info_cached(ticker.strip().upper())
@@ -147,9 +163,8 @@ def refresh_prices():
         updated_list.append(item)
         progress_bar.progress((i + 1) / len(current_list))
     progress_bar.empty()
-    # 가격 갱신 후 자동 저장
     update_portfolio_and_save(updated_list)
-    st.toast("시세 업데이트 완료 및 저장됨!", icon="🔄")
+    st.toast("시세 업데이트 및 저장 완료!", icon="🔄")
 
 def process_csv(txt):
     try:
@@ -166,7 +181,7 @@ with st.sidebar:
     
     # API 키 상태 점검
     if not API_KEY or not BIN_ID:
-        st.error("🚨 Secrets(API Key)가 설정되지 않았습니다! 저장이 불가능합니다.")
+        st.error("🚨 Secrets(API Key) 미설정! 저장이 불가능합니다.")
     
     prof_keys = list(st.session_state.full_data["profiles"].keys())
     sel_prof = st.selectbox("프로필 선택", prof_keys, index=prof_keys.index(st.session_state.current_profile) if st.session_state.current_profile in prof_keys else 0)
@@ -181,7 +196,6 @@ with st.sidebar:
             if new_p and new_p not in st.session_state.full_data["profiles"]:
                 st.session_state.full_data["profiles"][new_p] = []
                 st.session_state.current_profile = new_p
-                # 프로필 생성 시 자동 저장
                 save_data_to_cloud(st.session_state.full_data)
                 st.rerun()
         
@@ -193,10 +207,11 @@ with st.sidebar:
 
     st.divider()
     
-    # 수동 저장 버튼 (혹시 몰라 유지하되, 자동 저장이 기본임)
-    if st.button("강제 클라우드 저장 (Manual Save)", use_container_width=True): 
-        if save_data_to_cloud(st.session_state.full_data): st.toast("저장 완료!", icon="💾")
-        else: st.error("저장 실패")
+    # 강제 저장 버튼 (디버깅용)
+    if st.button("강제 클라우드 저장 (에러 확인용)", use_container_width=True): 
+        if save_data_to_cloud(st.session_state.full_data): 
+            st.toast("저장 성공!", icon="💾")
+            st.success("✅ 클라우드 저장 성공")
 
     st.divider()
     currency_mode = st.radio("통화", ["USD ($)", "KRW (₩)"], horizontal=True)
@@ -296,14 +311,12 @@ if portfolio_data:
     # --- 정렬 및 편집 ---
     st.subheader("📝 상세 데이터 관리 (자동 저장됨)")
     
-    # 정렬 UI
     c_s1, c_s2 = st.columns([1, 2])
     with c_s1:
         sort_opt = st.selectbox("정렬 기준", ["평가금액", "수익률", "티커", "섹터", "보유수량"])
     with c_s2:
         sort_ord = st.radio("정렬 순서", ["내림차순 (▼)", "오름차순 (▲)"], horizontal=True)
 
-    # 정렬 로직
     sort_map = {"평가금액": "Value_Disp", "수익률": "Return (%)", "티커": "Ticker", "섹터": "Sector", "보유수량": "Quantity"}
     asc = False if "내림차순" in sort_ord else True
     df_sorted = df.sort_values(by=sort_map[sort_opt], ascending=asc).reset_index(drop=True)
@@ -328,13 +341,11 @@ if portfolio_data:
         key="editor"
     )
 
-    # 변경 감지 및 자동 저장
     if not edit_df.equals(edited_df):
         new_portfolio = []
         for index, row in edited_df.iterrows():
             ticker = row['Ticker']
             try:
-                # 메타데이터 보존
                 original_row = df[df['Ticker'] == ticker].iloc[0]
                 sector = original_row['Sector']
                 mkt_cap = original_row['Market Cap Class']
@@ -351,7 +362,6 @@ if portfolio_data:
                 'Market Cap Class': mkt_cap
             })
         
-        # [자동 저장 트리거]
         update_portfolio_and_save(new_portfolio)
         st.rerun()
 
