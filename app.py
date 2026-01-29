@@ -15,7 +15,8 @@ st.markdown("""
 <style>
     div[data-testid="stMetric"] { background-color: #f9f9f9; border: 1px solid #e0e0e0; padding: 15px; border-radius: 10px; }
     button[data-baseweb="tab"] { font-weight: bold; }
-    .stSelectbox label { font-size: 1.2rem; font-weight: bold; color: #4e4e4e; }
+    .stSelectbox label { font-size: 1.0rem; font-weight: bold; color: #4e4e4e; }
+    .stRadio label { font-size: 1.0rem; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -223,7 +224,7 @@ if portfolio_data:
 
     st.divider()
 
-    # --- [복구됨] 차트 섹션 ---
+    # --- 차트 섹션 ---
     st.subheader("📈 포트폴리오 시각화 (Charts)")
     
     tab1, tab2 = st.tabs(["🧩 종합 분석 (Map & Sector)", "💹 수익률 분석 (Performance)"])
@@ -236,7 +237,7 @@ if portfolio_data:
         fig_tree.update_traces(textinfo="label+value+percent entry")
         st.plotly_chart(fig_tree, use_container_width=True)
 
-        # Row 2: 섹터 & 시총 (복구된 부분)
+        # Row 2: 섹터 & 시총
         c_chart1, c_chart2 = st.columns(2)
         with c_chart1:
             st.markdown("##### 🍰 섹터별 비중 (Sector)")
@@ -248,7 +249,6 @@ if portfolio_data:
         with c_chart2:
             st.markdown("##### 🏗️ 시가총액 규모 (Market Cap)")
             cap_order = ["Mega Cap (초대형주)", "Large Cap (대형주)", "Mid Cap (중형주)", "Small Cap (소형주)", "Micro Cap (초소형주)", "Unknown"]
-            # 데이터 집계
             df_cap = df.groupby('Market Cap Class')['Value_Disp'].sum().reset_index()
             fig_cap = px.bar(df_cap, x='Market Cap Class', y='Value_Disp', color='Market Cap Class', 
                              category_orders={"Market Cap Class": cap_order}, text_auto='.2s')
@@ -272,20 +272,48 @@ if portfolio_data:
 
     st.divider()
 
-    # --- [복구됨] 상세 데이터 수정 테이블 ---
-    st.subheader("📝 보유 종목 상세 & 수정")
-    st.info("💡 팁: '매수단가'와 '수량'을 수정하면 즉시 반영됩니다. (섹터, 시총은 자동 분류되므로 수정 불가)")
+    # --- [NEW] 정렬 기능 추가 ---
+    st.subheader("📝 보유 종목 상세 (Sorting & Edit)")
+    
+    # 정렬 컨트롤 UI
+    c_sort1, c_sort2 = st.columns([1, 2])
+    with c_sort1:
+        sort_option = st.selectbox(
+            "🔽 정렬 기준 (Sort By)", 
+            ["평가금액 (Value)", "수익률 (Return %)", "종목명 (Ticker)", "섹터 (Sector)", "보유수량 (Qty)"]
+        )
+    with c_sort2:
+        sort_order = st.radio(
+            "📶 정렬 순서 (Order)", 
+            ["내림차순 (▼ 높은 순)", "오름차순 (▲ 낮은 순)"], 
+            horizontal=True
+        )
 
-    # 편집용 DF 생성: 섹터와 시총 컬럼을 명시적으로 포함
-    edit_df = df[['Ticker', 'Sector', 'Market Cap Class', 'Avg Price', 'Quantity', 'Current Price', 'Return (%)', 'Value_Disp']].copy()
+    # 정렬 로직 적용
+    sort_map = {
+        "평가금액 (Value)": "Value_Disp",
+        "수익률 (Return %)": "Return (%)",
+        "종목명 (Ticker)": "Ticker",
+        "섹터 (Sector)": "Sector",
+        "보유수량 (Qty)": "Quantity"
+    }
+    
+    ascending = False if "내림차순" in sort_order else True
+    target_col = sort_map[sort_option]
+    
+    # 데이터프레임 정렬 실행
+    df_sorted = df.sort_values(by=target_col, ascending=ascending).reset_index(drop=True)
+
+    # 편집용 DF 생성
+    edit_df = df_sorted[['Ticker', 'Sector', 'Market Cap Class', 'Avg Price', 'Quantity', 'Current Price', 'Return (%)', 'Value_Disp']].copy()
     edit_df.columns = ['Ticker', 'Sector', 'Market Cap', 'Avg Price ($)', 'Quantity', 'Current Price ($)', 'Return (%)', f'Valuation ({sym})']
 
     edited_df = st.data_editor(
         edit_df,
         column_config={
             "Ticker": st.column_config.TextColumn(disabled=True),
-            "Sector": st.column_config.TextColumn(disabled=True), # 읽기 전용
-            "Market Cap": st.column_config.TextColumn(disabled=True), # 읽기 전용
+            "Sector": st.column_config.TextColumn(disabled=True),
+            "Market Cap": st.column_config.TextColumn(disabled=True),
             "Avg Price ($)": st.column_config.NumberColumn(min_value=0, format="%.2f", required=True),
             "Quantity": st.column_config.NumberColumn(min_value=0, format="%.4f", required=True),
             "Current Price ($)": st.column_config.NumberColumn(disabled=True, format="%.2f"),
@@ -301,16 +329,12 @@ if portfolio_data:
         new_portfolio = []
         for index, row in edited_df.iterrows():
             ticker = row['Ticker']
-            # 원본 메타데이터 보존 시도 (삭제되지 않은 행에 대해)
             try:
-                # 에디터의 행 순서가 바뀔 수 있으므로 인덱스보다는 티커/값 기반 매핑이 안전하나
-                # 여기서는 단순화를 위해 기존 로직 유지 (메타데이터는 읽기전용이므로 화면값 신뢰)
-                sector = row['Sector']
-                mkt_cap = row['Market Cap']
-                # 가격 갱신을 위해 원본 DF 참조 (API 값 유지)
-                # 만약 행이 새로 추가된 거라면(여기선 불가) 별도 처리 필요하지만
-                # 기존 행 수정이므로 원본 df에서 current price 가져옴 (안전장치)
-                curr_price = df[df['Ticker'] == ticker]['Current Price'].values[0] if not df[df['Ticker'] == ticker].empty else 0.0
+                # 메타데이터 보존 로직
+                original_row = df[df['Ticker'] == ticker].iloc[0]
+                sector = original_row['Sector']
+                mkt_cap = original_row['Market Cap Class']
+                curr_price = original_row['Current Price']
             except:
                 sector, mkt_cap, curr_price = "Unknown", "Unknown", 0.0
 
